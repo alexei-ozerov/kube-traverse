@@ -4,7 +4,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 )
 
-func initializeGvrList(items []list.Item, m *model) list.Model {
+func initializeGvrList(items []list.Item) list.Model {
 	const defaultWidth = 20
 	l := list.New(items, itemDelegate{}, defaultWidth, listHeight)
 	l.Title = "GVRs"

@@ -1,13 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os"
+
 	"github.com/alexei-ozerov/kube-traverse/internal/fsm"
 	"github.com/alexei-ozerov/kube-traverse/internal/kube"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"log"
-	"os"
 )
 
 /*
@@ -29,20 +31,18 @@ const (
 	transitionScreen
 )
 
-type appCtx struct {
-	// State
-	state fsm.Entity
-
-	// Kube
+type kubeData struct {
 	clients     kube.Ctx
 	gvrList     []kube.ApiResource
 	selectedGvr kube.ApiResource
-
-	// Ui
-	title string
 }
 
-func (c *appCtx) fetchKubeData() error {
+type applicationContext struct {
+	state fsm.Entity
+	kube  kubeData
+}
+
+func (c *applicationContext) fetchKubeData() error {
 	kubeCfg, err := kube.InitializeK8sClientConfig()
 	if err != nil {
 		return fmt.Errorf("error initializing k8s client: %v", err)
@@ -58,8 +58,8 @@ func (c *appCtx) fetchKubeData() error {
 		return fmt.Errorf("error initializing dynamic client: %v", err)
 	}
 
-	c.clients.Discovery = discoClient
-	c.clients.Dynamic = dynClient
+	c.kube.clients.Discovery = discoClient
+	c.kube.clients.Dynamic = dynClient
 
 	return nil
 }
@@ -68,15 +68,23 @@ func (c *appCtx) fetchKubeData() error {
 State Transitions
 */
 
-func (c *appCtx) gvrGetData() (fsm.State, bool) {
+func (c *applicationContext) gvrGetData() (fsm.State, bool) {
 	return 0, false
 }
 
-func (c *appCtx) gvrTransitionScreen() (fsm.State, bool) {
-	if c.selectedGvr.Namespaced {
+func (c *applicationContext) gvrTransitionScreen() (fsm.State, bool) {
+	if c.kube.selectedGvr.Namespaced {
 		return namespace, true
 	}
 
+	return resource, true
+}
+
+func (c *applicationContext) namespaceGetData() (fsm.State, bool) {
+	return namespace, false
+}
+
+func (c *applicationContext) namespaceTransitionScreen() (fsm.State, bool) {
 	return resource, true
 }
 
@@ -85,7 +93,7 @@ Runtime
 */
 
 func main() {
-	ctx := appCtx{}
+	ctx := applicationContext{}
 	pCtx := &ctx
 
 	err := pCtx.fetchKubeData()
@@ -97,14 +105,14 @@ func main() {
 	pCtx.state.SetInitialState(gvr)
 	pCtx.state.SetMachine([][]fsm.StateFn{
 		{pCtx.gvrGetData, pCtx.gvrTransitionScreen},
-		{},
+		{pCtx.namespaceGetData, pCtx.namespaceTransitionScreen},
 	})
 
-	gvrList, err := pCtx.clients.Discovery.GetListableResources()
+	gvrList, err := pCtx.kube.clients.Discovery.GetListableResources()
 	if err != nil {
 		log.Fatal(err)
 	}
-	ctx.gvrList = gvrList
+	ctx.kube.gvrList = gvrList
 
 	m := &model{
 		ctx: pCtx,
@@ -113,13 +121,18 @@ func main() {
 	// Initialize GVR List (For demo purposes)
 	// TODO (ozerova): Remove once ready to implement functionality properly
 	var items []list.Item
-	for _, gvr := range m.ctx.gvrList {
+	for _, gvr := range m.ctx.kube.gvrList {
 		items = append(items, item(gvr.Name))
 	}
-	m.list = initializeGvrList(items, m)
+	m.list = initializeGvrList(items)
 
 	// Init Program & Run TUI
 	m.program = tea.NewProgram(m)
+
+	globalCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.initNamespaceWatcher(globalCtx)
+
 	if _, err := m.program.Run(); err != nil {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)

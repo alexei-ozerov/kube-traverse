@@ -3,20 +3,23 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/alexei-ozerov/kube-traverse/internal/kube"
 	"io"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/dynamic/dynamicinformer"
-	"k8s.io/client-go/tools/cache"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/alexei-ozerov/kube-traverse/internal/kube"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-const listHeight = 14
+const listHeight = 28
 
 var (
 	titleStyle        = lipgloss.NewStyle().MarginLeft(2)
@@ -59,14 +62,16 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 }
 
 type model struct {
-	ctx *appCtx
+	ctx *applicationContext
 
 	ready bool
 
 	// Display
 	list   list.Model
 	choice string
-	ns     string
+
+	namespaces []string
+	ns         string
 
 	// Lifecycle
 	cancelInformer context.CancelFunc
@@ -78,6 +83,11 @@ Messages
 */
 
 type ResourceUpdateMsg []list.Item
+type NamepaceUpdateMsg []string
+
+/*
+Model Methods
+*/
 
 func (m *model) Init() tea.Cmd {
 	return nil
@@ -86,7 +96,27 @@ func (m *model) Init() tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ResourceUpdateMsg:
+		if m.ctx.state.GetCurrentState() == namespace {
+			items := make([]list.Item, len(m.namespaces))
+			for i, ns := range m.namespaces {
+				items[i] = item(ns)
+			}
+			return m, m.list.SetItems(items)
+		}
+
 		return m, m.list.SetItems(msg)
+
+	case NamepaceUpdateMsg:
+		m.namespaces = msg
+		if m.ctx.state.GetCurrentState() == namespace {
+			items := make([]list.Item, len(m.namespaces))
+			for i, ns := range m.namespaces {
+				items[i] = item(ns)
+			}
+			return m, m.list.SetItems(items)
+		}
+
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.list.SetWidth(msg.Width)
@@ -100,37 +130,37 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			selected, ok := m.list.SelectedItem().(item)
 			if ok {
-				m.choice = string(selected)
+				// This transition only happens when a namespaced resource is selected
+				// therefore, selectedGvr will always be set prior to this branch running
+				if m.ctx.state.GetCurrentState() == namespace {
+					m.ns = string(selected)
 
-				var selectedGvr kube.ApiResource
-				for _, g := range m.ctx.gvrList {
-					if g.Name == m.choice {
-						selectedGvr = g
-						break
+					m.list.FilterInput.Reset()
+					m.list.SetFilterState(0)
+
+					m.ctx.state.Dispatch(transitionScreen)
+					m.startInformer(m.ctx.kube.selectedGvr)
+				} else {
+					m.choice = string(selected)
+
+					var selectedGvr kube.ApiResource
+					for _, g := range m.ctx.kube.gvrList {
+						if g.Name == m.choice {
+							selectedGvr = g
+							break
+						}
 					}
+
+					m.list.FilterInput.Reset()
+					m.list.SetFilterState(0)
+
+					// Transition the FSM
+					m.ctx.kube.selectedGvr = selectedGvr
+					m.startInformer(selectedGvr)
+					m.ctx.state.Dispatch(transitionScreen)
 				}
 
-				m.list.FilterInput.Reset()
-				m.list.SetFilterState(0)
-				m.startInformer(selectedGvr)
-
-				// Transition the FSM
-				m.ctx.selectedGvr = selectedGvr
-				m.ctx.state.Dispatch(transitionScreen)
-				switch m.ctx.state.GetCurrentState() {
-				case gvr:
-					m.list.Title = "GVRs"
-				case namespace:
-					m.list.Title = "Namespaces"
-				case resource:
-					m.list.Title = strings.ToUpper(m.choice)
-				case children:
-					m.list.Title = "Children"
-				case reference:
-					m.list.Title = "References"
-				default:
-					panic("unhandled default case")
-				}
+				m.setListTitle()
 			}
 		}
 	}
@@ -145,7 +175,7 @@ func (m *model) View() string {
 	case gvr:
 		return "\n" + m.list.View()
 	case namespace:
-		return "\nPlaceholder: namespace state"
+		return "\n" + m.list.View()
 	case resource:
 		return "\n" + m.list.View()
 	case children:
@@ -170,7 +200,7 @@ func (m *model) startInformer(gvr kube.ApiResource) {
 	m.cancelInformer = cancel
 
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
-		m.ctx.clients.Dynamic.Client,
+		m.ctx.kube.clients.Dynamic.Client,
 		0,
 		m.ns,
 		nil,
@@ -212,4 +242,52 @@ func (m *model) startInformer(gvr kube.ApiResource) {
 	}
 
 	go informer.Run(ctx.Done())
+}
+
+func (m *model) initNamespaceWatcher(ctx context.Context) {
+	nsGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	factory := dynamicinformer.NewDynamicSharedInformerFactory(m.ctx.kube.clients.Dynamic.Client, time.Minute*30)
+	informer := factory.ForResource(nsGVR).Informer()
+
+	syncNamespaces := func() {
+		if m.program == nil {
+			return
+		}
+
+		objs := informer.GetStore().List()
+		nsNames := make([]string, 0, len(objs))
+		for _, obj := range objs {
+			if unstr, ok := obj.(*unstructured.Unstructured); ok {
+				nsNames = append(nsNames, unstr.GetName())
+			}
+		}
+
+		slices.Sort(nsNames)
+
+		m.program.Send(NamepaceUpdateMsg(nsNames))
+	}
+
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { syncNamespaces() },
+		DeleteFunc: func(obj interface{}) { syncNamespaces() },
+	})
+
+	go informer.Run(ctx.Done())
+}
+
+func (m *model) setListTitle() {
+	switch m.ctx.state.GetCurrentState() {
+	case gvr:
+		m.list.Title = "GVRs"
+	case namespace:
+		m.list.Title = "Namespaces"
+	case resource:
+		m.list.Title = strings.ToUpper(m.choice)
+	case children:
+		m.list.Title = "Children"
+	case reference:
+		m.list.Title = "References"
+	default:
+		panic("unhandled default case")
+	}
 }
