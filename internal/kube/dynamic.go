@@ -11,5 +11,5 @@ func GetDynamicClient(config *rest.Config) (*DynamicClient, error) {
 		return nil, err
 	}
 
-	return &DynamicClient{client: dynClient}, nil
+	return &DynamicClient{Client: dynClient}, nil
 }

@@ -16,11 +16,11 @@ func NewDiscoveryClient(config *rest.Config) (*DiscoveryClient, error) {
 		return nil, err
 	}
 
-	return &DiscoveryClient{client: d}, nil
+	return &DiscoveryClient{Client: d}, nil
 }
 
 func (d *DiscoveryClient) GetListableResources() ([]ApiResource, error) {
-	lists, err := d.client.ServerPreferredResources()
+	lists, err := d.Client.ServerPreferredResources()
 	if err != nil {
 		fmt.Printf("partial discovery results: %v\n", err)
 	}

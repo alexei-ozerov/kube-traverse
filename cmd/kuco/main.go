@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"log"
 	"os"
-	"sync"
 )
 
 /*
@@ -31,15 +30,16 @@ const (
 )
 
 type appCtx struct {
-	// Lock
-	mLock sync.Mutex
-
 	// State
 	state fsm.Entity
 
 	// Kube
-	clients kube.Ctx
-	gvrList []kube.ApiResource
+	clients     kube.Ctx
+	gvrList     []kube.ApiResource
+	selectedGvr kube.ApiResource
+
+	// Ui
+	title string
 }
 
 func (c *appCtx) fetchKubeData() error {
@@ -73,9 +73,7 @@ func (c *appCtx) gvrGetData() (fsm.State, bool) {
 }
 
 func (c *appCtx) gvrTransitionScreen() (fsm.State, bool) {
-	changeMeLater := true
-
-	if changeMeLater {
+	if c.selectedGvr.Namespaced {
 		return namespace, true
 	}
 
@@ -108,8 +106,9 @@ func main() {
 	}
 	ctx.gvrList = gvrList
 
-	m := model{}
-	m.ctx = pCtx
+	m := &model{
+		ctx: pCtx,
+	}
 
 	// Initialize GVR List (For demo purposes)
 	// TODO (ozerova): Remove once ready to implement functionality properly
@@ -117,10 +116,11 @@ func main() {
 	for _, gvr := range m.ctx.gvrList {
 		items = append(items, item(gvr.Name))
 	}
-	m.list = initializeGvrList(items)
+	m.list = initializeGvrList(items, m)
 
-	// Run TUI
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	// Init Program & Run TUI
+	m.program = tea.NewProgram(m)
+	if _, err := m.program.Run(); err != nil {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
 	}

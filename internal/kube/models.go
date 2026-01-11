@@ -21,9 +21,9 @@ type ApiResource struct {
 }
 
 type DiscoveryClient struct {
-	client discovery.DiscoveryInterface
+	Client discovery.DiscoveryInterface
 }
 
 type DynamicClient struct {
-	client dynamic.Interface
+	Client dynamic.Interface
 }
