@@ -17,6 +17,7 @@ type ApiResource struct {
 	Name       string
 	Kind       string
 	Namespaced bool
+	Watchable  bool
 	GVR        schema.GroupVersionResource
 }
 

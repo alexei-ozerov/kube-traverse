@@ -1,0 +1,191 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"github.com/charmbracelet/bubbles/viewport"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/tools/cache"
+	"log"
+	"os"
+	"slices"
+	"time"
+
+	"github.com/alexei-ozerov/kube-traverse/internal/fsm"
+	"github.com/alexei-ozerov/kube-traverse/internal/kube"
+	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+/*
+State Machine & Application Context
+*/
+
+// State will track the possible states that the UI is capable of showing
+const (
+	gvr fsm.State = iota
+	namespace
+	//children
+	//reference
+	resource
+	spec
+)
+
+// Events will track different actions which can impact the state.
+const (
+	transitionScreenForward fsm.Event = iota
+	transitionScreenBackward
+)
+
+type appData struct {
+	// Lifecycle
+	cancelInformer context.CancelFunc
+	program        *tea.Program
+
+	// Kube
+	clients     kube.Ctx
+	gvrList     []kube.ApiResource
+	selectedGvr *kube.ApiResource
+
+	dynFact dynamicinformer.DynamicSharedInformerFactory
+
+	// Tui
+	list   list.Model
+	choice string
+
+	gvrChoice string
+
+	ns         string
+	namespaces []string
+
+	resources    []list.Item
+	unstructured []*unstructured.Unstructured
+
+	viewport         viewport.Model
+	selectedResource *unstructured.Unstructured
+}
+
+func (a *appData) getGvrFromString() {
+	for _, gvr := range a.gvrList {
+		if gvr.Name == a.gvrChoice {
+			a.selectedGvr = &gvr
+			break
+		}
+	}
+}
+
+func (a *appData) convertGvrToItemList() {
+	var items []list.Item
+	for _, gvr := range a.gvrList {
+		items = append(items, item(gvr.Name))
+	}
+	a.list = initializeGvrList(items)
+}
+
+func (a *appData) fetchKubeData() error {
+	kubeCfg, err := kube.InitializeK8sClientConfig()
+	if err != nil {
+		return err
+	}
+
+	discoClient, err := kube.NewDiscoveryClient(kubeCfg)
+	if err != nil {
+		return err
+	}
+
+	dynClient, err := kube.GetDynamicClient(kubeCfg)
+	if err != nil {
+		return err
+	}
+
+	a.clients.Discovery = discoClient
+	a.clients.Dynamic = dynClient
+
+	return nil
+}
+
+func (a *appData) initNamespaceWatcher(ctx context.Context) {
+	nsGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	factory := dynamicinformer.NewDynamicSharedInformerFactory(a.clients.Dynamic.Client, time.Minute*30)
+	informer := factory.ForResource(nsGVR).Informer()
+
+	syncNamespaces := func() {
+		if a.program == nil {
+			return
+		}
+
+		objs := informer.GetStore().List()
+		nsNames := make([]string, 0, len(objs))
+		for _, obj := range objs {
+			if unstr, ok := obj.(*unstructured.Unstructured); ok {
+				nsNames = append(nsNames, unstr.GetName())
+			}
+		}
+
+		slices.Sort(nsNames)
+		a.namespaces = nsNames
+	}
+
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { syncNamespaces() },
+		DeleteFunc: func(obj interface{}) { syncNamespaces() },
+	})
+
+	go informer.Run(ctx.Done())
+}
+
+type model struct {
+	entity *fsm.Entity[appData]
+}
+
+/*
+Runtime
+*/
+
+func main() {
+	// Data
+	d := &appData{}
+	err := d.fetchKubeData()
+	if err != nil {
+		log.Fatal(err)
+	}
+	d.dynFact = dynamicinformer.NewDynamicSharedInformerFactory(d.clients.Dynamic.Client, 0)
+
+	// Initialize FSM
+	e := &fsm.Entity[appData]{
+		Data: d,
+	}
+
+	// Initialize Model
+	m := &model{entity: e}
+
+	// Setup initial state
+	e.SetInitialState(gvr)
+	e.SetMachine([][]fsm.StateFn{
+		{m.gvrTransitionScreenForward, m.gvrTransitionScreenBackward},
+		{m.namespaceTransitionScreenForward, m.namespaceTransitionScreenBackward},
+		{m.resourceTransitionScreenForward, m.resourceTransitionScreenBackward},
+		{m.specGetData, m.specTransitionScreenForward, m.specTransitionScreenBackward},
+	})
+	e.Data.program = tea.NewProgram(m)
+
+	// Initialize GVR List
+	gvrList, err := d.clients.Discovery.GetListableResources()
+	if err != nil {
+		log.Fatal(err)
+	}
+	d.gvrList = gvrList
+	d.convertGvrToItemList()
+
+	// Start watching namespaces in goroutine
+	globalCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.initNamespaceWatcher(globalCtx)
+
+	if _, err := e.Data.program.Run(); err != nil {
+		fmt.Println("Error running program:", err)
+		os.Exit(1)
+	}
+}

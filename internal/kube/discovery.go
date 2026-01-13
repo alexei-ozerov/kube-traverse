@@ -41,6 +41,7 @@ func (d *DiscoveryClient) GetListableResources() ([]ApiResource, error) {
 				Name:       res.Name,
 				Kind:       res.Kind,
 				Namespaced: res.Namespaced,
+				Watchable:  slices.Contains(res.Verbs, "watch"),
 				GVR: schema.GroupVersionResource{
 					Group:    gv.Group,
 					Version:  gv.Version,
