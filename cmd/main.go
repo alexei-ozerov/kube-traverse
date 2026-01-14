@@ -15,6 +15,7 @@ const (
 	gvr fsm.State = iota
 	namespace
 	resource
+	actions
 	spec
 )
 
@@ -62,6 +63,7 @@ func main() {
 		{m.gvrTransitionScreenForward, m.gvrTransitionScreenBackward},
 		{m.namespaceTransitionScreenForward, m.namespaceTransitionScreenBackward},
 		{m.resourceTransitionScreenForward, m.resourceTransitionScreenBackward},
+		{m.actionsTransitionScreenForward, m.actionsTransitionScreenBackward},
 		{m.specTransitionScreenForward, m.specTransitionScreenBackward},
 	})
 
@@ -69,9 +71,13 @@ func main() {
 	e.Data.program = tea.NewProgram(m, tea.WithAltScreen())
 
 	// Initialize GVR List
-	gvrList, err := d.clients.Discovery.GetListableResources()
-	if err != nil {
-		log.Fatal(err)
+	gvrList, found := d.clients.Discovery.GetCachedResources()
+	if !found {
+		gvrList, err = d.clients.Discovery.GetListableResources()
+		if err != nil {
+			log.Fatal(err)
+		}
+		d.clients.Discovery.SaveResourcesToCache(gvrList)
 	}
 	d.gvrList = gvrList
 	d.convertGvrToItemList()

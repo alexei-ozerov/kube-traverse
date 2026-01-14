@@ -31,7 +31,7 @@ func (m *model) namespaceTransitionScreenBackward() (fsm.State, bool) {
 
 // Resource Transitions
 func (m *model) resourceTransitionScreenForward() (fsm.State, bool) {
-	return spec, true
+	return actions, true
 }
 
 func (m *model) resourceTransitionScreenBackward() (fsm.State, bool) {
@@ -41,7 +41,17 @@ func (m *model) resourceTransitionScreenBackward() (fsm.State, bool) {
 	return gvr, true
 }
 
+// Action Transitions
+func (m *model) actionsTransitionScreenForward() (fsm.State, bool) {
+	if m.entity.Data.choice == "spec" {
+		return spec, true
+	}
+	return actions, false
+}
+func (m *model) actionsTransitionScreenBackward() (fsm.State, bool) { return resource, true }
+
 // Spec Transitions
-func (m *model) specGetData() (fsm.State, bool)                  { return spec, false }
 func (m *model) specTransitionScreenForward() (fsm.State, bool)  { return spec, false }
-func (m *model) specTransitionScreenBackward() (fsm.State, bool) { return resource, true }
+func (m *model) specTransitionScreenBackward() (fsm.State, bool) { 
+	return actions, true 
+}

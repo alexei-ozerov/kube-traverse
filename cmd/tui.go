@@ -92,13 +92,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "l", "enter":
-			if m.handleForward() {
-				m.syncList()
+			if m.entity.Data.list.FilterState() != list.Filtering {
+				cmd, transitioned := m.handleForward()
+				if transitioned {
+					m.syncList()
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+
+					return m, tea.Batch(cmds...)
+				}
 			}
 
 		case "h", "left":
 			m.entity.Dispatch(transitionScreenBackward)
 			m.syncList()
+
+			return m, nil
 		}
 
 	case ResourceUpdateMsg:
@@ -106,8 +116,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entity.Data.unstructured = msg
 		m.entity.Data.mu.Unlock()
 
-		// Since this can only happen on the resource screen, sync here
-		m.syncList()
+		if m.entity.GetCurrentState() == resource {
+			m.syncList()
+		}
 		cmds = append(cmds, m.listenForResourceUpdates())
 
 	case NamespaceUpdateMsg:
@@ -115,11 +126,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entity.Data.namespaces = msg
 		m.entity.Data.mu.Unlock()
 
-		// If we need the UI to update, sync here
 		if m.entity.GetCurrentState() == namespace {
 			m.syncList()
 		}
 		cmds = append(cmds, m.listenForNamespaceUpdates())
+
 	}
 
 	var listCmd tea.Cmd
@@ -129,12 +140,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *model) handleForward() bool {
+func (m *model) handleForward() (tea.Cmd, bool) {
 	selected, ok := m.entity.Data.list.SelectedItem().(item)
 	if !ok {
-		return false
+		return nil, false
 	}
 
+	var cmd tea.Cmd	
 	selStr := string(selected)
 	state := m.entity.GetCurrentState()
 
@@ -145,7 +157,7 @@ func (m *model) handleForward() bool {
 		m.entity.Data.mu.Unlock()
 
 		m.entity.Data.getGvrFromString()
-		m.runInformer()
+		cmd = m.runInformer()
 
 	case namespace:
 		m.entity.Data.mu.Lock()
@@ -169,14 +181,20 @@ func (m *model) handleForward() bool {
 				break
 			}
 		}
-		m.syncSpec()
+		m.entity.Data.choice = ""
+
+	case actions:
+		m.entity.Data.mu.Lock()
+		m.entity.Data.choice = selStr // Capture selected action (e.g., 'logs')
+		m.entity.Data.mu.Unlock()
+		if selStr == "spec" {
+			m.syncSpec()
+		}
 	}
 
-	m.entity.Data.list.FilterInput.Reset()
-	m.entity.Data.list.SetFilterState(0)
+	m.entity.Data.list.ResetFilter()
 	m.entity.Dispatch(transitionScreenForward)
-
-	return true
+	return cmd, true
 }
 
 func (m *model) View() string {
@@ -282,10 +300,26 @@ func (m *model) syncList() {
 		for _, name := range names {
 			items = append(items, item(name))
 		}
+
+	case actions:
+		m.entity.Data.mu.RLock()
+		selectedGvr := m.entity.Data.selectedGvr
+		m.entity.Data.mu.RUnlock()
+
+		if selectedGvr != nil {
+			title = fmt.Sprintf("Actions for %s", selectedGvr.Name)
+			for _, action := range selectedGvr.SubResources {
+				items = append(items, item(action))
+			}
+		}
 	}
 
 	m.entity.Data.list.Title = title
 	m.entity.Data.list.SetItems(items)
+
+	m.entity.Data.list.ResetFilter()
+	m.entity.Data.list.Select(0)
+	m.entity.Data.list.Paginator.Page = 0
 }
 
 func (m *model) syncSpec() {

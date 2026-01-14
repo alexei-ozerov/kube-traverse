@@ -14,11 +14,12 @@ type Ctx struct {
 
 // ApiResource Metadata we want to extract for a K8s type
 type ApiResource struct {
-	Name       string
-	Kind       string
-	Namespaced bool
-	Watchable  bool
-	GVR        schema.GroupVersionResource
+	Name         string
+	Kind         string
+	Namespaced   bool
+	Watchable    bool
+	GVR          schema.GroupVersionResource
+	SubResources []string
 }
 
 type DiscoveryClient struct {

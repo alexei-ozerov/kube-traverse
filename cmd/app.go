@@ -59,10 +59,10 @@ func (a *appData) getGvrFromString() {
 	gvrChoice := a.gvrChoice
 	a.mu.RUnlock()
 
-	for _, gvr := range a.gvrList {
-		if gvr.Name == gvrChoice {
+	for i := range a.gvrList {
+		if a.gvrList[i].Name == gvrChoice {
 			a.mu.Lock()
-			a.selectedGvr = &gvr
+			a.selectedGvr = &a.gvrList[i]
 			a.mu.Unlock()
 			break
 		}
@@ -70,9 +70,15 @@ func (a *appData) getGvrFromString() {
 }
 
 func (a *appData) convertGvrToItemList() {
-	var items []list.Item
+	var itemNames []string 
 	for _, gvr := range a.gvrList {
-		items = append(items, item(gvr.Name))
+		itemNames = append(itemNames, gvr.Name)
+	}
+	slices.Sort(itemNames)
+	
+	var items []list.Item
+	for _, gvr := range itemNames {
+		items = append(items, item(gvr))
 	}
 	a.list = initializeGvrList(items)
 }

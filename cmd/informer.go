@@ -2,86 +2,82 @@ package main
 
 import (
 	"context"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/cache"
-	"log"
-	"time"
 )
 
-func (m *model) runInformer() {
-	// Cancel existing informer and wait for shutdown completion
-	m.entity.Data.mu.Lock()
-	if m.entity.Data.cancelInformer != nil {
-		m.entity.Data.cancelInformer()
+
+func (m *model) runInformer() tea.Cmd {
+	return func() tea.Msg {
+		// Moving Wait() inside the return function ensures it runs 
+		// in a background goroutine, not the main UI thread.
+		m.entity.Data.mu.Lock()
+		if m.entity.Data.cancelInformer != nil {
+			m.entity.Data.cancelInformer()
+			m.entity.Data.mu.Unlock()
+			m.entity.Data.informerWg.Wait() 
+		} else {
+			m.entity.Data.mu.Unlock()
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		m.entity.Data.mu.Lock()
+		m.entity.Data.cancelInformer = cancel
+		selectedGvr := m.entity.Data.selectedGvr
 		m.entity.Data.mu.Unlock()
-		m.entity.Data.informerWg.Wait()
-	} else {
-		m.entity.Data.mu.Unlock()
-	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+		if selectedGvr == nil {
+			return nil
+		}
 
-	m.entity.Data.mu.Lock()
-	m.entity.Data.cancelInformer = cancel
-	selectedGvr := m.entity.Data.selectedGvr
-	m.entity.Data.mu.Unlock()
-	if selectedGvr == nil {
-		return
-	}
+		if !selectedGvr.Watchable {
+			m.entity.Data.informerWg.Go(func() {
+				m.startPolling(ctx)
+			})
+			return nil
+		}
 
-	// In unwatchable, add Wg and start polling for manual sync
-	if !selectedGvr.Watchable {
-		m.entity.Data.informerWg.Add(1)
-		go func() {
-			defer m.entity.Data.informerWg.Done()
-			m.startPolling(ctx)
-		}()
-		return
-	}
+		dynamicFactory := m.entity.Data.dynFact
+		informer := dynamicFactory.ForResource(selectedGvr.GVR).Informer()
 
-	dynamicFactory := m.entity.Data.dynFact
-	informer := dynamicFactory.ForResource(m.entity.Data.selectedGvr.GVR).Informer()
+		syncToTUI := func() {
+			objs := informer.GetStore().List()
+			var objects []*unstructured.Unstructured
+			for _, obj := range objs {
+				if unstr, ok := obj.(*unstructured.Unstructured); ok {
+					objects = append(objects, unstr)
+				}
+			}
 
-	syncToTUI := func() {
-		objs := informer.GetStore().List()
-		var objects []*unstructured.Unstructured
-		for _, obj := range objs {
-			if unstructuredResource, ok := obj.(*unstructured.Unstructured); ok {
-				objects = append(objects, unstructuredResource)
+			select {
+			case m.entity.Data.resourceUpdates <- objects:
+			case <-ctx.Done():
+				return
+			default:
 			}
 		}
 
-		select {
-		case m.entity.Data.resourceUpdates <- objects:
-		case <-ctx.Done():
-			return
-		default:
-			// Channel full, skip update
+		_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(obj any) { syncToTUI() },
+			UpdateFunc: func(old, new any) { syncToTUI() },
+			DeleteFunc: func(obj any) { syncToTUI() },
+		})
+
+		if err != nil {
+			return nil
 		}
+
+		m.entity.Data.informerWg.Go(func() {
+			informer.Run(ctx.Done())
+		})
+		return nil
 	}
-
-	// Callbacks for watcher (all of which sync the Items list from scratch) :3
-	// TODO (ozerova): Consider a more efficient way of doing this please..
-	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { syncToTUI() },
-		UpdateFunc: func(old, new interface{}) { syncToTUI() },
-		DeleteFunc: func(obj interface{}) { syncToTUI() },
-	})
-
-	if err != nil {
-		log.Printf("WARN: Issue adding event handler: %v", err)
-		return
-	}
-
-	// Run informer, set Wg to watch when this routine needs to end
-	m.entity.Data.informerWg.Add(1)
-	go func() {
-		defer m.entity.Data.informerWg.Done()
-		informer.Run(ctx.Done())
-	}()
 }
-
 func (m *model) pullResourcesOnce() {
 	m.entity.Data.mu.RLock()
 	selectedGvr := m.entity.Data.selectedGvr
