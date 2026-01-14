@@ -61,13 +61,16 @@ Messages
 */
 
 type ResourceUpdateMsg []*unstructured.Unstructured
+type NamespaceUpdateMsg []string
 
 /*
 Model Methods
 */
 
 func (m *model) Init() tea.Cmd {
-	return nil
+	return tea.Batch(
+		m.listenForResourceUpdates(),
+		m.listenForNamespaceUpdates())
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -99,8 +102,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ResourceUpdateMsg:
+		m.entity.Data.mu.Lock()
 		m.entity.Data.unstructured = msg
+		m.entity.Data.mu.Unlock()
+
+		// Since this can only happen on the resource screen, sync here
 		m.syncList()
+		cmds = append(cmds, m.listenForResourceUpdates())
+
+	case NamespaceUpdateMsg:
+		m.entity.Data.mu.Lock()
+		m.entity.Data.namespaces = msg
+		m.entity.Data.mu.Unlock()
+
+		// If we need the UI to update, sync here
+		if m.entity.GetCurrentState() == namespace {
+			m.syncList()
+		}
+		cmds = append(cmds, m.listenForNamespaceUpdates())
 	}
 
 	var listCmd tea.Cmd
@@ -121,22 +140,35 @@ func (m *model) handleForward() bool {
 
 	switch state {
 	case gvr:
+		m.entity.Data.mu.Lock()
 		m.entity.Data.gvrChoice = selStr
+		m.entity.Data.mu.Unlock()
+
 		m.entity.Data.getGvrFromString()
 		m.runInformer()
+
 	case namespace:
-		m.entity.Data.ns = selStr
+		m.entity.Data.mu.Lock()
+		m.entity.Data.nsChoice = selStr
 		if selStr == "all" {
-			m.entity.Data.ns = ""
+			m.entity.Data.nsChoice = ""
 		}
+		m.entity.Data.mu.Unlock()
+
 	case resource:
-		for _, obj := range m.entity.Data.unstructured {
+		m.entity.Data.mu.RLock()
+		unstructuredItems := m.entity.Data.unstructured
+		m.entity.Data.mu.RUnlock()
+
+		for _, obj := range unstructuredItems {
 			if obj.GetName() == selStr {
+				m.entity.Data.mu.Lock()
 				m.entity.Data.selectedResource = obj
+				m.entity.Data.viewport = viewport.New(m.entity.Data.list.Width(), m.entity.Data.list.Height()-4)
+				m.entity.Data.mu.Unlock()
 				break
 			}
 		}
-		m.entity.Data.viewport = viewport.New(m.entity.Data.list.Width(), m.entity.Data.list.Height()-4)
 		m.syncSpec()
 	}
 
@@ -149,13 +181,22 @@ func (m *model) handleForward() bool {
 
 func (m *model) View() string {
 	if m.entity.GetCurrentState() == spec {
-		scrollPercent := fmt.Sprintf("%3.f%%", m.entity.Data.viewport.ScrollPercent()*100)
+		m.entity.Data.mu.RLock()
+		selectedResource := m.entity.Data.selectedResource
+		viewportContainer := m.entity.Data.viewport
+		m.entity.Data.mu.RUnlock()
+
+		if selectedResource == nil {
+			return "No resource selected"
+		}
+
+		scrollPercent := fmt.Sprintf("%3.f%%", viewportContainer.ScrollPercent()*100)
 
 		return fmt.Sprintf(
 			"Viewing Spec: %s (%s)\n\n%s\n\n%s",
-			m.entity.Data.selectedResource.GetName(),
+			selectedResource.GetName(),
 			scrollPercent,
-			m.entity.Data.viewport.View(),
+			viewportContainer.View(),
 			helpStyle.Render("↑/↓: Scroll • h/←: Back"),
 		)
 	}
@@ -165,6 +206,34 @@ func (m *model) View() string {
 /*
 Custom Methods
 */
+
+func (m *model) listenForResourceUpdates() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case resources, ok := <-m.entity.Data.resourceUpdates:
+			if !ok {
+				return nil // Channel closed
+			}
+			return ResourceUpdateMsg(resources)
+		case <-m.entity.Data.shutdownChannels:
+			return nil
+		}
+	}
+}
+
+func (m *model) listenForNamespaceUpdates() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case namespaces, ok := <-m.entity.Data.namespaceUpdates:
+			if !ok {
+				return nil // Channel closed
+			}
+			return NamespaceUpdateMsg(namespaces)
+		case <-m.entity.Data.shutdownChannels:
+			return nil
+		}
+	}
+}
 
 func (m *model) syncList() {
 	state := m.entity.GetCurrentState()
@@ -179,17 +248,32 @@ func (m *model) syncList() {
 		}
 
 	case namespace:
-		title = fmt.Sprintf("Namespaces (%s)", m.entity.Data.selectedGvr.Name)
-		for _, ns := range m.entity.Data.namespaces {
+		m.entity.Data.mu.RLock()
+		selectedGvr := m.entity.Data.selectedGvr
+		namespaces := m.entity.Data.namespaces
+		m.entity.Data.mu.RUnlock()
+
+		if selectedGvr != nil {
+			title = fmt.Sprintf("Namespaces (%s)", selectedGvr.Name)
+		}
+		for _, ns := range namespaces {
 			items = append(items, item(ns))
 		}
 
 	case resource:
-		title = fmt.Sprintf("Resources (%s)", m.entity.Data.selectedGvr.Name)
+		m.entity.Data.mu.RLock()
+		selectedGvr := m.entity.Data.selectedGvr
+		unstructuredItems := m.entity.Data.unstructured
+		ns := m.entity.Data.nsChoice
+		m.entity.Data.mu.RUnlock()
+
+		if selectedGvr != nil {
+			title = fmt.Sprintf("Resources (%s)", selectedGvr.Name)
+		}
 
 		var names []string
-		for _, unstr := range m.entity.Data.unstructured {
-			if m.entity.Data.ns == "" || unstr.GetNamespace() == m.entity.Data.ns {
+		for _, unstr := range unstructuredItems {
+			if ns == "" || unstr.GetNamespace() == ns {
 				names = append(names, unstr.GetName())
 			}
 		}
@@ -205,23 +289,37 @@ func (m *model) syncList() {
 }
 
 func (m *model) syncSpec() {
-	if m.entity.Data.selectedResource == nil {
+	m.entity.Data.mu.RLock()
+	selectedResource := m.entity.Data.selectedResource
+	unstructuredObject := m.entity.Data.unstructured
+	m.entity.Data.mu.RUnlock()
+
+	if selectedResource == nil {
 		return
 	}
 
-	for _, obj := range m.entity.Data.unstructured {
-		if obj.GetName() == m.entity.Data.selectedResource.GetName() &&
-			obj.GetNamespace() == m.entity.Data.selectedResource.GetNamespace() {
+	for _, obj := range unstructuredObject {
+		if obj.GetName() == selectedResource.GetName() &&
+			obj.GetNamespace() == selectedResource.GetNamespace() {
+
+			m.entity.Data.mu.Lock()
 			m.entity.Data.selectedResource = obj
+			m.entity.Data.mu.Unlock()
+
+			selectedResource = obj
 			break
 		}
 	}
 
-	yamlData, err := yaml.Marshal(m.entity.Data.selectedResource.Object)
+	yamlData, err := yaml.Marshal(selectedResource.Object)
 	if err != nil {
+		m.entity.Data.mu.Lock()
 		m.entity.Data.viewport.SetContent("Error marshaling spec: " + err.Error())
+		m.entity.Data.mu.Unlock()
 		return
 	}
 
+	m.entity.Data.mu.Lock()
 	m.entity.Data.viewport.SetContent(string(yamlData))
+	m.entity.Data.mu.Unlock()
 }

@@ -1,10 +1,31 @@
 package main
 
 import (
+	"fmt"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
+	"log"
+	"os"
+	"time"
 )
+
+func setupLogging() (*os.File, error) {
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		return nil, fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	logFileName := fmt.Sprintf("logs/kube-traverse-%s.log", time.Now().Format("2006-01-02_15-04-05"))
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	log.SetOutput(logFile)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	return logFile, nil
+}
 
 func initializeGvrList(items []list.Item) list.Model {
 	const defaultWidth = 14

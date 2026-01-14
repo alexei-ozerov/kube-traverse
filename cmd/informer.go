@@ -10,15 +10,33 @@ import (
 )
 
 func (m *model) runInformer() {
+	// Cancel existing informer and wait for shutdown completion
+	m.entity.Data.mu.Lock()
 	if m.entity.Data.cancelInformer != nil {
 		m.entity.Data.cancelInformer()
+		m.entity.Data.mu.Unlock()
+		m.entity.Data.informerWg.Wait()
+	} else {
+		m.entity.Data.mu.Unlock()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.entity.Data.cancelInformer = cancel
 
-	if !m.entity.Data.selectedGvr.Watchable {
-		go m.startPolling(ctx)
+	m.entity.Data.mu.Lock()
+	m.entity.Data.cancelInformer = cancel
+	selectedGvr := m.entity.Data.selectedGvr
+	m.entity.Data.mu.Unlock()
+	if selectedGvr == nil {
+		return
+	}
+
+	// In unwatchable, add Wg and start polling for manual sync
+	if !selectedGvr.Watchable {
+		m.entity.Data.informerWg.Add(1)
+		go func() {
+			defer m.entity.Data.informerWg.Done()
+			m.startPolling(ctx)
+		}()
 		return
 	}
 
@@ -26,10 +44,6 @@ func (m *model) runInformer() {
 	informer := dynamicFactory.ForResource(m.entity.Data.selectedGvr.GVR).Informer()
 
 	syncToTUI := func() {
-		if m.entity.Data.program == nil {
-			return
-		}
-
 		objs := informer.GetStore().List()
 		var objects []*unstructured.Unstructured
 		for _, obj := range objs {
@@ -38,7 +52,13 @@ func (m *model) runInformer() {
 			}
 		}
 
-		m.entity.Data.program.Send(ResourceUpdateMsg(objects))
+		select {
+		case m.entity.Data.resourceUpdates <- objects:
+		case <-ctx.Done():
+			return
+		default:
+			// Channel full, skip update
+		}
 	}
 
 	// Callbacks for watcher (all of which sync the Items list from scratch) :3
@@ -50,14 +70,28 @@ func (m *model) runInformer() {
 	})
 
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("WARN: Issue adding event handler: %v", err)
+		return
 	}
 
-	go informer.Run(ctx.Done())
+	// Run informer, set Wg to watch when this routine needs to end
+	m.entity.Data.informerWg.Add(1)
+	go func() {
+		defer m.entity.Data.informerWg.Done()
+		informer.Run(ctx.Done())
+	}()
 }
 
 func (m *model) pullResourcesOnce() {
-	gvr := m.entity.Data.selectedGvr.GVR
+	m.entity.Data.mu.RLock()
+	selectedGvr := m.entity.Data.selectedGvr
+	m.entity.Data.mu.RUnlock()
+
+	if selectedGvr == nil {
+		return
+	}
+
+	gvr := selectedGvr.GVR
 
 	list, err := m.entity.Data.clients.Dynamic.Client.
 		Resource(gvr).
@@ -72,13 +106,19 @@ func (m *model) pullResourcesOnce() {
 		objects = append(objects, &list.Items[i])
 	}
 
-	// Send to TUI
-	m.entity.Data.program.Send(ResourceUpdateMsg(objects))
+	select {
+	case m.entity.Data.resourceUpdates <- objects:
+	default:
+		// Channel full, skip
+	}
 }
 
 func (m *model) startPolling(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	// Initial pull
+	m.pullResourcesOnce()
 
 	for {
 		select {

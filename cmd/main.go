@@ -3,15 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"slices"
+	"sync"
+	"time"
+
 	"github.com/charmbracelet/bubbles/viewport"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
-	"log"
-	"os"
-	"slices"
-	"time"
 
 	"github.com/alexei-ozerov/kube-traverse/internal/fsm"
 	"github.com/alexei-ozerov/kube-traverse/internal/kube"
@@ -27,8 +29,6 @@ State Machine & Application Context
 const (
 	gvr fsm.State = iota
 	namespace
-	//children
-	//reference
 	resource
 	spec
 )
@@ -41,36 +41,53 @@ const (
 
 type appData struct {
 	// Lifecycle
+	mu             sync.RWMutex
 	cancelInformer context.CancelFunc
+	informerWg     sync.WaitGroup
 	program        *tea.Program
+
+	// Channels
+	resourceUpdates  chan []*unstructured.Unstructured
+	namespaceUpdates chan []string
+	shutdownChannels chan struct{}
 
 	// Kube
 	clients     kube.Ctx
 	gvrList     []kube.ApiResource
 	selectedGvr *kube.ApiResource
-
-	dynFact dynamicinformer.DynamicSharedInformerFactory
+	dynFact     dynamicinformer.DynamicSharedInformerFactory
 
 	// Tui
-	list   list.Model
-	choice string
-
-	gvrChoice string
-
-	ns         string
-	namespaces []string
-
-	resources    []list.Item
-	unstructured []*unstructured.Unstructured
-
+	list             list.Model
+	choice           string
+	gvrChoice        string
+	nsChoice         string
+	namespaces       []string
+	resources        []list.Item
+	unstructured     []*unstructured.Unstructured
 	viewport         viewport.Model
 	selectedResource *unstructured.Unstructured
 }
 
+func newAppData() *appData {
+	return &appData{
+		resourceUpdates:  make(chan []*unstructured.Unstructured, 10),
+		namespaceUpdates: make(chan []string, 10),
+		shutdownChannels: make(chan struct{}),
+		namespaces:       []string{"all"},
+	}
+}
+
 func (a *appData) getGvrFromString() {
+	a.mu.RLock()
+	gvrChoice := a.gvrChoice
+	a.mu.RUnlock()
+
 	for _, gvr := range a.gvrList {
-		if gvr.Name == a.gvrChoice {
+		if gvr.Name == gvrChoice {
+			a.mu.Lock()
 			a.selectedGvr = &gvr
+			a.mu.Unlock()
 			break
 		}
 	}
@@ -112,10 +129,6 @@ func (a *appData) initNamespaceWatcher(ctx context.Context) {
 	informer := factory.ForResource(nsGVR).Informer()
 
 	syncNamespaces := func() {
-		if a.program == nil {
-			return
-		}
-
 		objs := informer.GetStore().List()
 		nsNames := make([]string, 0, len(objs))
 		for _, obj := range objs {
@@ -123,10 +136,15 @@ func (a *appData) initNamespaceWatcher(ctx context.Context) {
 				nsNames = append(nsNames, unstr.GetName())
 			}
 		}
-		nsNames = append([]string{"all"}, nsNames...)
 
 		slices.Sort(nsNames)
-		a.namespaces = nsNames
+		nsNames = append([]string{"all"}, nsNames...)
+		select {
+		case a.namespaceUpdates <- nsNames:
+		case <-ctx.Done():
+		default:
+			// Channel full, skip update
+		}
 	}
 
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -135,6 +153,21 @@ func (a *appData) initNamespaceWatcher(ctx context.Context) {
 	})
 
 	go informer.Run(ctx.Done())
+}
+
+func (a *appData) shutdown() {
+	close(a.shutdownChannels)
+
+	a.mu.Lock()
+	if a.cancelInformer != nil {
+		a.cancelInformer()
+	}
+	a.mu.Unlock()
+
+	a.informerWg.Wait()
+
+	close(a.resourceUpdates)
+	close(a.namespaceUpdates)
 }
 
 type model struct {
@@ -146,9 +179,16 @@ Runtime
 */
 
 func main() {
+	logFile, err := setupLogging()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to setup logging: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
 	// Data
-	d := &appData{}
-	err := d.fetchKubeData()
+	d := newAppData()
+	err = d.fetchKubeData()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -170,6 +210,8 @@ func main() {
 		{m.resourceTransitionScreenForward, m.resourceTransitionScreenBackward},
 		{m.specGetData, m.specTransitionScreenForward, m.specTransitionScreenBackward},
 	})
+
+	// Okay, this is probably pedantic...
 	e.Data.program = tea.NewProgram(m)
 
 	// Initialize GVR List
@@ -189,4 +231,7 @@ func main() {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
 	}
+
+	// Cleanup channels
+	d.shutdown()
 }
