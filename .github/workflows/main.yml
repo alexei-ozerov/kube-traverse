@@ -28,6 +28,3 @@ jobs:
             README.md
             LICENSE
           dist_root_path: dist
-          
-      - name: List generated files
-        run: echo "Built archive files: ${{ env.GOBUILD_FILES }}"
