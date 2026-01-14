@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/muesli/reflow/wordwrap"
 	"gopkg.in/yaml.v3"
 	"k8s.io/api/core/v1"
 
@@ -91,11 +92,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.entity.Data.list.SetSize(msg.Width, msg.Height-2)
+		if m.entity.GetCurrentState() == logs {
+			m.entity.Data.mu.Lock()
+			m.entity.Data.viewport.Width = msg.Width
+			m.entity.Data.viewport.Height = msg.Height - 6
+
+			wrapped := wordwrap.String(colorizeLog(m.entity.Data.logBuffer), msg.Width)
+			m.entity.Data.viewport.SetContent(wrapped)
+			m.entity.Data.mu.Unlock()
+		}
 
 	case LogChunkMsg:
 		m.entity.Data.mu.Lock()
 		m.entity.Data.logBuffer += string(msg)
-		m.entity.Data.viewport.SetContent(m.entity.Data.logBuffer)
+		colorized := colorizeLog(m.entity.Data.logBuffer)
+		width := m.entity.Data.viewport.Width
+		wrapped := wordwrap.String(colorized, width)
+		m.entity.Data.viewport.SetContent(wrapped)
 		m.entity.Data.viewport.GotoBottom()
 		m.entity.Data.mu.Unlock()
 		return m, nil
@@ -209,6 +222,7 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 		m.entity.Data.mu.Lock()
 		m.entity.Data.selectedContainer = selStr
 		m.entity.Data.logBuffer = ""
+		m.entity.Data.viewport = viewport.New(m.entity.Data.list.Width(), m.entity.Data.list.Height()-4)
 		m.entity.Data.mu.Unlock()
 
 		cmd = m.startLiveLogs()
