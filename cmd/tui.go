@@ -126,6 +126,9 @@ func (m *model) handleForward() bool {
 		m.runInformer()
 	case namespace:
 		m.entity.Data.ns = selStr
+		if selStr == "all" {
+			m.entity.Data.ns = ""
+		}
 	case resource:
 		for _, obj := range m.entity.Data.unstructured {
 			if obj.GetName() == selStr {
@@ -183,17 +186,14 @@ func (m *model) syncList() {
 
 	case resource:
 		title = fmt.Sprintf("Resources (%s)", m.entity.Data.selectedGvr.Name)
-		if m.entity.Data.selectedGvr.Namespaced {
-			title += " in " + m.entity.Data.ns
-		}
 
 		var names []string
 		for _, unstr := range m.entity.Data.unstructured {
-			// If namespaced, only show items in selected namespace
-			if !m.entity.Data.selectedGvr.Namespaced || unstr.GetNamespace() == m.entity.Data.ns {
+			if m.entity.Data.ns == "" || unstr.GetNamespace() == m.entity.Data.ns {
 				names = append(names, unstr.GetName())
 			}
 		}
+
 		slices.Sort(names)
 		for _, name := range names {
 			items = append(items, item(name))

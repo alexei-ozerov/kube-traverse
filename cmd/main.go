@@ -123,6 +123,7 @@ func (a *appData) initNamespaceWatcher(ctx context.Context) {
 				nsNames = append(nsNames, unstr.GetName())
 			}
 		}
+		nsNames = append([]string{"all"}, nsNames...)
 
 		slices.Sort(nsNames)
 		a.namespaces = nsNames
