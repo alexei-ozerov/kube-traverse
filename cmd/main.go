@@ -66,7 +66,7 @@ func main() {
 	})
 
 	// Okay, this is probably pedantic...
-	e.Data.program = tea.NewProgram(m)
+	e.Data.program = tea.NewProgram(m, tea.WithAltScreen())
 
 	// Initialize GVR List
 	gvrList, err := d.clients.Discovery.GetListableResources()

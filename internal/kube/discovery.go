@@ -1,7 +1,7 @@
 package kube
 
 import (
-	"fmt"
+	"log"
 	"slices"
 	"strings"
 
@@ -22,7 +22,7 @@ func NewDiscoveryClient(config *rest.Config) (*DiscoveryClient, error) {
 func (d *DiscoveryClient) GetListableResources() ([]ApiResource, error) {
 	lists, err := d.Client.ServerPreferredResources()
 	if err != nil {
-		fmt.Printf("partial discovery results: %v\n", err)
+		log.Printf("partial discovery results: %v\n", err)
 	}
 
 	var results []ApiResource
