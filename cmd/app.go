@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"slices"
+	"sync"
+	"time"
+
 	"github.com/alexei-ozerov/kube-traverse/internal/kube"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -9,16 +13,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	"slices"
-	"sync"
-	"time"
 )
 
 type appData struct {
 	// Lifecycle
 	mu             sync.RWMutex
 	cancelInformer context.CancelFunc
+	cancelLog      context.CancelFunc
 	informerWg     sync.WaitGroup
 	program        *tea.Program
 
@@ -34,15 +37,17 @@ type appData struct {
 	dynFact     dynamicinformer.DynamicSharedInformerFactory
 
 	// Tui
-	list             list.Model
-	choice           string
-	gvrChoice        string
-	nsChoice         string
-	namespaces       []string
-	resources        []list.Item
-	unstructured     []*unstructured.Unstructured
-	viewport         viewport.Model
-	selectedResource *unstructured.Unstructured
+	list              list.Model
+	choice            string
+	gvrChoice         string
+	nsChoice          string
+	namespaces        []string
+	resources         []list.Item
+	unstructured      []*unstructured.Unstructured
+	viewport          viewport.Model
+	selectedResource  *unstructured.Unstructured
+	selectedContainer string
+	logBuffer         string
 }
 
 func newAppData() *appData {
@@ -70,12 +75,12 @@ func (a *appData) getGvrFromString() {
 }
 
 func (a *appData) convertGvrToItemList() {
-	var itemNames []string 
+	var itemNames []string
 	for _, gvr := range a.gvrList {
 		itemNames = append(itemNames, gvr.Name)
 	}
 	slices.Sort(itemNames)
-	
+
 	var items []list.Item
 	for _, gvr := range itemNames {
 		items = append(items, item(gvr))
@@ -99,8 +104,14 @@ func (a *appData) fetchKubeData() error {
 		return err
 	}
 
+	typedClient, err := kubernetes.NewForConfig(kubeCfg)
+	if err != nil {
+		return err
+	}
+
 	a.clients.Discovery = discoClient
 	a.clients.Dynamic = dynClient
+	a.clients.Typed = typedClient
 
 	return nil
 }

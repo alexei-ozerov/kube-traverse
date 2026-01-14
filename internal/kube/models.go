@@ -4,12 +4,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 )
 
 // Ctx Wrapper around the entities we want to expose to a consumer
 type Ctx struct {
 	Discovery *DiscoveryClient
 	Dynamic   *DynamicClient
+	Typed     kubernetes.Interface
 }
 
 // ApiResource Metadata we want to extract for a K8s type

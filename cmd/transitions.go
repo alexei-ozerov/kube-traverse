@@ -31,7 +31,7 @@ func (m *model) namespaceTransitionScreenBackward() (fsm.State, bool) {
 
 // Resource Transitions
 func (m *model) resourceTransitionScreenForward() (fsm.State, bool) {
-	return actions, true
+	return action, true
 }
 
 func (m *model) resourceTransitionScreenBackward() (fsm.State, bool) {
@@ -42,16 +42,38 @@ func (m *model) resourceTransitionScreenBackward() (fsm.State, bool) {
 }
 
 // Action Transitions
-func (m *model) actionsTransitionScreenForward() (fsm.State, bool) {
+func (m *model) actionTransitionScreenForward() (fsm.State, bool) {
 	if m.entity.Data.choice == "spec" {
 		return spec, true
 	}
-	return actions, false
+
+	if m.entity.Data.choice == "log" {
+		return container, true
+	}
+
+	return action, false
 }
-func (m *model) actionsTransitionScreenBackward() (fsm.State, bool) { return resource, true }
+func (m *model) actionTransitionScreenBackward() (fsm.State, bool) { return resource, true }
 
 // Spec Transitions
-func (m *model) specTransitionScreenForward() (fsm.State, bool)  { return spec, false }
-func (m *model) specTransitionScreenBackward() (fsm.State, bool) { 
-	return actions, true 
+func (m *model) specTransitionScreenForward() (fsm.State, bool) { return spec, false }
+func (m *model) specTransitionScreenBackward() (fsm.State, bool) {
+	return action, true
+}
+
+// Container Transitios
+func (m *model) containerTransitionScreenForward() (fsm.State, bool) {
+	return logs, true
+}
+func (m *model) containerTransitionScreenBackward() (fsm.State, bool) {
+	return action, true
+}
+
+// Logs Transitions
+func (m *model) logsTransitionScreenForward() (fsm.State, bool) { return logs, false }
+func (m *model) logsTransitionScreenBackward() (fsm.State, bool) {
+	if m.entity.Data.cancelLog != nil {
+		m.entity.Data.cancelLog()
+	}
+	return container, true
 }

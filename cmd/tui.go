@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"fmt"
-	"github.com/charmbracelet/bubbles/viewport"
-	"gopkg.in/yaml.v3"
 	"io"
+	"log"
 	"slices"
 	"strings"
+
+	"github.com/charmbracelet/bubbles/viewport"
+	"gopkg.in/yaml.v3"
+	"k8s.io/api/core/v1"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -62,6 +67,7 @@ Messages
 
 type ResourceUpdateMsg []*unstructured.Unstructured
 type NamespaceUpdateMsg []string
+type LogChunkMsg string
 
 /*
 Model Methods
@@ -76,7 +82,7 @@ func (m *model) Init() tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	if m.entity.GetCurrentState() == spec {
+	if m.entity.GetCurrentState() == spec || m.entity.GetCurrentState() == logs {
 		var viewportCmd tea.Cmd
 		m.entity.Data.viewport, viewportCmd = m.entity.Data.viewport.Update(msg)
 		cmds = append(cmds, viewportCmd)
@@ -85,6 +91,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.entity.Data.list.SetSize(msg.Width, msg.Height-2)
+
+	case LogChunkMsg:
+		m.entity.Data.mu.Lock()
+		m.entity.Data.logBuffer += string(msg)
+		m.entity.Data.viewport.SetContent(m.entity.Data.logBuffer)
+		m.entity.Data.viewport.GotoBottom()
+		m.entity.Data.mu.Unlock()
+		return m, nil
 
 	case tea.KeyMsg:
 		switch keypress := msg.String(); keypress {
@@ -146,7 +160,7 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 		return nil, false
 	}
 
-	var cmd tea.Cmd	
+	var cmd tea.Cmd
 	selStr := string(selected)
 	state := m.entity.GetCurrentState()
 
@@ -183,13 +197,21 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 		}
 		m.entity.Data.choice = ""
 
-	case actions:
+	case action:
 		m.entity.Data.mu.Lock()
-		m.entity.Data.choice = selStr // Capture selected action (e.g., 'logs')
+		m.entity.Data.choice = selStr
 		m.entity.Data.mu.Unlock()
 		if selStr == "spec" {
 			m.syncSpec()
 		}
+
+	case container:
+		m.entity.Data.mu.Lock()
+		m.entity.Data.selectedContainer = selStr
+		m.entity.Data.logBuffer = ""
+		m.entity.Data.mu.Unlock()
+
+		cmd = m.startLiveLogs()
 	}
 
 	m.entity.Data.list.ResetFilter()
@@ -198,7 +220,8 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 }
 
 func (m *model) View() string {
-	if m.entity.GetCurrentState() == spec {
+	state := m.entity.GetCurrentState()
+	if state == spec || state == logs {
 		m.entity.Data.mu.RLock()
 		selectedResource := m.entity.Data.selectedResource
 		viewportContainer := m.entity.Data.viewport
@@ -208,12 +231,15 @@ func (m *model) View() string {
 			return "No resource selected"
 		}
 
-		scrollPercent := fmt.Sprintf("%3.f%%", viewportContainer.ScrollPercent()*100)
+		title := "Viewing Spec"
+		if state == logs {
+			title = "Viewing Logs"
+		}
 
 		return fmt.Sprintf(
-			"Viewing Spec: %s (%s)\n\n%s\n\n%s",
-			selectedResource.GetName(),
-			scrollPercent,
+			"%s: %s (%3.f%%)\n\n%s\n\n%s",
+			title, selectedResource.GetName(),
+			viewportContainer.ScrollPercent()*100,
 			viewportContainer.View(),
 			helpStyle.Render("↑/↓: Scroll • h/←: Back"),
 		)
@@ -301,7 +327,7 @@ func (m *model) syncList() {
 			items = append(items, item(name))
 		}
 
-	case actions:
+	case action:
 		m.entity.Data.mu.RLock()
 		selectedGvr := m.entity.Data.selectedGvr
 		m.entity.Data.mu.RUnlock()
@@ -310,6 +336,24 @@ func (m *model) syncList() {
 			title = fmt.Sprintf("Actions for %s", selectedGvr.Name)
 			for _, action := range selectedGvr.SubResources {
 				items = append(items, item(action))
+			}
+		}
+	case container:
+		m.entity.Data.mu.RLock()
+		selectedResource := m.entity.Data.selectedResource
+		m.entity.Data.mu.RUnlock()
+
+		title = "Select Container"
+		if selectedResource != nil {
+			containers, _, _ := unstructured.NestedSlice(selectedResource.Object, "spec", "containers")
+			initContainers, _, _ := unstructured.NestedSlice(selectedResource.Object, "spec", "initContainers")
+
+			for _, c := range append(containers, initContainers...) {
+				if cMap, ok := c.(map[string]interface{}); ok {
+					if name, ok := cMap["name"].(string); ok {
+						items = append(items, item(name))
+					}
+				}
 			}
 		}
 	}
@@ -356,4 +400,88 @@ func (m *model) syncSpec() {
 	m.entity.Data.mu.Lock()
 	m.entity.Data.viewport.SetContent(string(yamlData))
 	m.entity.Data.mu.Unlock()
+}
+
+func (m *model) syncLogs() {
+	m.entity.Data.mu.RLock()
+	pod := m.entity.Data.selectedResource
+	container := m.entity.Data.selectedContainer
+	clientset := m.entity.Data.clients.Typed
+	m.entity.Data.mu.RUnlock()
+
+	if pod == nil || clientset == nil {
+		log.Printf("Either pod or clientset is nil, cannot continue.")
+		return
+	}
+
+	tailLines := int64(200)
+	req := clientset.CoreV1().Pods(pod.GetNamespace()).GetLogs(pod.GetName(), &v1.PodLogOptions{
+		Container: container,
+		TailLines: &tailLines,
+	})
+
+	logStream, err := req.Stream(context.Background())
+	if err != nil {
+		m.entity.Data.mu.Lock()
+		m.entity.Data.viewport.SetContent("Error fetching logs: " + err.Error())
+		m.entity.Data.mu.Unlock()
+		return
+	}
+	defer logStream.Close()
+
+	logBytes, err := io.ReadAll(logStream)
+	if err != nil {
+		m.entity.Data.mu.Lock()
+		m.entity.Data.viewport.SetContent("Error fetching logs: " + err.Error())
+		m.entity.Data.mu.Unlock()
+		return
+	}
+
+	m.entity.Data.mu.Lock()
+	m.entity.Data.viewport.SetContent(string(logBytes))
+	m.entity.Data.mu.Unlock()
+}
+
+func (m *model) startLiveLogs() tea.Cmd {
+	return func() tea.Msg {
+		m.entity.Data.mu.Lock()
+		pod := m.entity.Data.selectedResource
+		container := m.entity.Data.selectedContainer
+		clientset := m.entity.Data.clients.Typed
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m.entity.Data.cancelLog = cancel
+		m.entity.Data.mu.Unlock()
+
+		if pod == nil || clientset == nil {
+			return nil
+		}
+
+		tailLines := int64(200)
+		req := clientset.CoreV1().Pods(pod.GetNamespace()).GetLogs(pod.GetName(), &v1.PodLogOptions{
+			Container: container,
+			TailLines: &tailLines,
+			Follow:    true,
+		})
+
+		stream, err := req.Stream(ctx)
+		if err != nil {
+			return nil
+		}
+
+		go func() {
+			defer stream.Close()
+			scanner := bufio.NewScanner(stream)
+			for scanner.Scan() {
+				m.entity.Data.program.Send(LogChunkMsg(scanner.Text() + "\n"))
+
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+			}
+		}()
+		return nil
+	}
 }

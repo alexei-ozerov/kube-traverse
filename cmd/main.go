@@ -15,8 +15,10 @@ const (
 	gvr fsm.State = iota
 	namespace
 	resource
-	actions
+	action
 	spec
+	container
+	logs
 )
 
 // Events will track different actions which can impact the state.
@@ -63,8 +65,10 @@ func main() {
 		{m.gvrTransitionScreenForward, m.gvrTransitionScreenBackward},
 		{m.namespaceTransitionScreenForward, m.namespaceTransitionScreenBackward},
 		{m.resourceTransitionScreenForward, m.resourceTransitionScreenBackward},
-		{m.actionsTransitionScreenForward, m.actionsTransitionScreenBackward},
+		{m.actionTransitionScreenForward, m.actionTransitionScreenBackward},
 		{m.specTransitionScreenForward, m.specTransitionScreenBackward},
+		{m.containerTransitionScreenForward, m.containerTransitionScreenBackward},
+		{m.logsTransitionScreenForward, m.logsTransitionScreenBackward},
 	})
 
 	// Okay, this is probably pedantic...
