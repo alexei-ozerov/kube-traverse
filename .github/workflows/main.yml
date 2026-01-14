@@ -1,0 +1,33 @@
+name: Build and Package Go Binaries
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+
+      - name: Run Go Multi-Platform Build Action
+        id: build
+        uses: chihqiang/gobuild-action@main
+        with:
+          bin_name: kt
+          main_go: ./cmd/main.go
+          version: ${{ github.ref_name }}
+          add_files: |
+            README.md
+            LICENSE
+          dist_root_path: dist
+          
+      - name: List generated files
+        run: echo "Built archive files: ${{ env.GOBUILD_FILES }}"
