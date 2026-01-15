@@ -9,11 +9,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/muesli/reflow/wordwrap"
 	"gopkg.in/yaml.v3"
 	"k8s.io/api/core/v1"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -228,8 +228,12 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 		cmd = m.startLiveLogs()
 	}
 
+	// Reset list before next page to avoid duplicates
+	var emptyList []list.Item
+	m.entity.Data.list.SetItems(emptyList)
 	m.entity.Data.list.ResetFilter()
 	m.entity.Dispatch(transitionScreenForward)
+
 	return cmd, true
 }
 
@@ -363,7 +367,7 @@ func (m *model) syncList() {
 			initContainers, _, _ := unstructured.NestedSlice(selectedResource.Object, "spec", "initContainers")
 
 			for _, c := range append(containers, initContainers...) {
-				if cMap, ok := c.(map[string]interface{}); ok {
+				if cMap, ok := c.(map[string]any); ok {
 					if name, ok := cMap["name"].(string); ok {
 						items = append(items, item(name))
 					}
