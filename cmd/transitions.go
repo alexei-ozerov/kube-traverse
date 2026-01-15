@@ -43,11 +43,11 @@ func (m *model) resourceTransitionScreenBackward() (fsm.State, bool) {
 
 // Action Transitions
 func (m *model) actionTransitionScreenForward() (fsm.State, bool) {
-	if m.entity.Data.choice == "spec" {
+	if m.entity.Data.choice == "spec*" {
 		return spec, true
 	}
 
-	if m.entity.Data.choice == "log" {
+	if m.entity.Data.choice == "log*" {
 		return container, true
 	}
 

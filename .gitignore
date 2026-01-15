@@ -1,5 +1,8 @@
 .idea
 logs
 bin
+
+*.log
+
 # Added by goreleaser init:
 dist/

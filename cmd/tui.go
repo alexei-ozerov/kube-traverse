@@ -5,16 +5,17 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/muesli/reflow/wordwrap"
 	"gopkg.in/yaml.v3"
 	"k8s.io/api/core/v1"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -69,6 +70,16 @@ Messages
 type ResourceUpdateMsg []*unstructured.Unstructured
 type NamespaceUpdateMsg []string
 type LogChunkMsg string
+
+type LogSavedMsg string
+type ClearNotificationMsg struct{}
+
+// Add a notification style
+var notificationStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("0")).
+	Background(lipgloss.Color("10")). // Green background
+	Padding(0, 1).
+	Bold(true)
 
 /*
 Model Methods
@@ -127,6 +138,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
+		case "s":
+			if m.entity.GetCurrentState() == logs {
+				m.saveLog()
+
+				return m, m.saveLog()
+			}
+
 		case "l", "enter":
 			if m.entity.Data.list.FilterState() != list.Filtering {
 				cmd, transitioned := m.handleForward()
@@ -167,6 +185,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.listenForNamespaceUpdates())
 
+	case LogSavedMsg:
+		m.entity.Data.mu.Lock()
+		m.entity.Data.exportNotification = string(msg)
+		m.entity.Data.mu.Unlock()
+		return m, tea.Tick(time.Second*3, func(t time.Time) tea.Msg {
+			return ClearNotificationMsg{}
+		})
+
+	case ClearNotificationMsg:
+		m.entity.Data.mu.Lock()
+		m.entity.Data.exportNotification = ""
+		m.entity.Data.mu.Unlock()
+		return m, nil
 	}
 
 	var listCmd tea.Cmd
@@ -247,8 +278,12 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 }
 
 func (m *model) View() string {
+	var mainView string
 	state := m.entity.GetCurrentState()
+
 	if state == spec || state == logs {
+		var helpText string
+
 		m.entity.Data.mu.RLock()
 		selectedResource := m.entity.Data.selectedResource
 		viewportContainer := m.entity.Data.viewport
@@ -258,20 +293,35 @@ func (m *model) View() string {
 			return "No resource selected"
 		}
 
+		helpText = helpStyle.Render("↑ /↓ : Scroll • h/← : Back")
+
 		title := "Viewing Spec"
 		if state == logs {
 			title = "Viewing Logs"
+			helpText = helpStyle.Render("↑ /↓ : Scroll • s: save logfile • h/← : Back")
 		}
 
-		return fmt.Sprintf(
+		mainView = fmt.Sprintf(
 			"%s: %s (%3.f%%)\n\n%s\n\n%s",
 			title, selectedResource.GetName(),
 			viewportContainer.ScrollPercent()*100,
 			viewportContainer.View(),
-			helpStyle.Render("↑/↓: Scroll • h/←: Back"),
+			helpText,
 		)
+	} else {
+		mainView = "\n" + m.entity.Data.list.View()
 	}
-	return "\n" + m.entity.Data.list.View()
+
+	m.entity.Data.mu.RLock()
+	notify := m.entity.Data.exportNotification
+	m.entity.Data.mu.RUnlock()
+
+	if notify != "" {
+		popup := notificationStyle.Render(notify)
+		return mainView + "\n" + popup
+	}
+
+	return mainView
 }
 
 /*
@@ -363,10 +413,10 @@ func (m *model) syncList() {
 			title = fmt.Sprintf("Actions for %s", selectedGvr.Name)
 			for _, action := range selectedGvr.SubResources {
 				if action == "log" || action == "spec" {
-					items = append(items, item(action + "*"))
+					items = append(items, item(action+"*"))
 					continue
 				}
-					items = append(items, item(action))
+				items = append(items, item(action))
 			}
 		}
 	case container:
@@ -436,44 +486,45 @@ func (m *model) syncSpec() {
 	m.entity.Data.mu.Unlock()
 }
 
-func (m *model) syncLogs() {
-	m.entity.Data.mu.RLock()
-	pod := m.entity.Data.selectedResource
-	container := m.entity.Data.selectedContainer
-	clientset := m.entity.Data.clients.Typed
-	m.entity.Data.mu.RUnlock()
+func (m *model) saveLog() tea.Cmd {
+	return func() tea.Msg {
+		m.entity.Data.mu.RLock()
+		pod := m.entity.Data.selectedResource
+		container := m.entity.Data.selectedContainer
+		clientset := m.entity.Data.clients.Typed
+		m.entity.Data.mu.RUnlock()
 
-	if pod == nil || clientset == nil {
-		log.Printf("Either pod or clientset is nil, cannot continue.")
-		return
+		if pod == nil || clientset == nil {
+			return LogSavedMsg("Error: Missing Pod or Client")
+		}
+
+		req := clientset.CoreV1().Pods(pod.GetNamespace()).GetLogs(pod.GetName(), &v1.PodLogOptions{
+			Container: container,
+		})
+
+		logStream, err := req.Stream(context.Background())
+		if err != nil {
+			return LogSavedMsg("Error: " + err.Error())
+		}
+		defer logStream.Close()
+
+		logBytes, err := io.ReadAll(logStream)
+		if err != nil {
+			return LogSavedMsg("Error: " + err.Error())
+		}
+
+		logFileName := fmt.Sprintf("./%s-%s-%s.log",
+			time.Now().Format("2006-01-02_15-04-05"),
+			pod.GetName(),
+			container)
+
+		err = os.WriteFile(logFileName, logBytes, 0644)
+		if err != nil {
+			return LogSavedMsg("Error: " + err.Error())
+		}
+
+		return LogSavedMsg("Downloaded: " + logFileName)
 	}
-
-	tailLines := int64(200)
-	req := clientset.CoreV1().Pods(pod.GetNamespace()).GetLogs(pod.GetName(), &v1.PodLogOptions{
-		Container: container,
-		TailLines: &tailLines,
-	})
-
-	logStream, err := req.Stream(context.Background())
-	if err != nil {
-		m.entity.Data.mu.Lock()
-		m.entity.Data.viewport.SetContent("Error fetching logs: " + err.Error())
-		m.entity.Data.mu.Unlock()
-		return
-	}
-	defer logStream.Close()
-
-	logBytes, err := io.ReadAll(logStream)
-	if err != nil {
-		m.entity.Data.mu.Lock()
-		m.entity.Data.viewport.SetContent("Error fetching logs: " + err.Error())
-		m.entity.Data.mu.Unlock()
-		return
-	}
-
-	m.entity.Data.mu.Lock()
-	m.entity.Data.viewport.SetContent(string(logBytes))
-	m.entity.Data.mu.Unlock()
 }
 
 func (m *model) startLiveLogs() tea.Cmd {

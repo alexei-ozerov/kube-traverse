@@ -47,8 +47,12 @@ type appData struct {
 	viewport          viewport.Model
 	selectedResource  *unstructured.Unstructured
 	selectedContainer string
-	selectedSpec 	  string
+	selectedSpec      string
 	logBuffer         string
+
+	// Export
+	exportNotification string
+	logExportBuf       string
 }
 
 func newAppData() *appData {
