@@ -47,6 +47,7 @@ type appData struct {
 	viewport          viewport.Model
 	selectedResource  *unstructured.Unstructured
 	selectedContainer string
+	selectedSpec 	  string
 	logBuffer         string
 }
 

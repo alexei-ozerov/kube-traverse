@@ -102,6 +102,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entity.Data.mu.Unlock()
 		}
 
+		if m.entity.GetCurrentState() == spec {
+			m.entity.Data.mu.Lock()
+			m.entity.Data.viewport.Width = msg.Width
+			m.entity.Data.viewport.Height = msg.Height - 6
+
+			m.entity.Data.viewport.SetContent(wordwrap.String(m.entity.Data.selectedSpec, msg.Width))
+			m.entity.Data.mu.Unlock()
+		}
+
 	case LogChunkMsg:
 		m.entity.Data.mu.Lock()
 		m.entity.Data.logBuffer += string(msg)
@@ -214,7 +223,7 @@ func (m *model) handleForward() (tea.Cmd, bool) {
 		m.entity.Data.mu.Lock()
 		m.entity.Data.choice = selStr
 		m.entity.Data.mu.Unlock()
-		if selStr == "spec" {
+		if selStr == "spec*" {
 			m.syncSpec()
 		}
 
@@ -353,7 +362,11 @@ func (m *model) syncList() {
 		if selectedGvr != nil {
 			title = fmt.Sprintf("Actions for %s", selectedGvr.Name)
 			for _, action := range selectedGvr.SubResources {
-				items = append(items, item(action))
+				if action == "log" || action == "spec" {
+					items = append(items, item(action + "*"))
+					continue
+				}
+					items = append(items, item(action))
 			}
 		}
 	case container:
@@ -415,8 +428,11 @@ func (m *model) syncSpec() {
 		return
 	}
 
+	highlighedYaml := highlightYAML(string(yamlData))
+	m.entity.Data.selectedSpec = highlighedYaml
+
 	m.entity.Data.mu.Lock()
-	m.entity.Data.viewport.SetContent(string(yamlData))
+	m.entity.Data.viewport.SetContent(highlighedYaml)
 	m.entity.Data.mu.Unlock()
 }
 
