@@ -9,3 +9,4 @@ run:
 clean:
 	go clean
 	rm -rf dist
+	rm 2026*.log
