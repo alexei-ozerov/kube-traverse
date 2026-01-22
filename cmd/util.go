@@ -69,3 +69,11 @@ func newListKeyMap() listKeyMap {
 		),
 	}
 }
+
+// TODO (ozerova): decide on if this is idiomatic or not.
+func (m *model) lockResource() {
+	m.entity.Data.mu.Lock()
+}
+func (m *model) unlockResource() {
+	m.entity.Data.mu.Unlock()
+}

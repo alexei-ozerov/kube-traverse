@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/alexei-ozerov/kube-traverse/internal/kube"
 	"github.com/charmbracelet/bubbles/list"
@@ -122,9 +121,11 @@ func (a *appData) fetchKubeData() error {
 }
 
 func (a *appData) initNamespaceWatcher(ctx context.Context) {
+	a.mu.Lock()
 	nsGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
-	factory := dynamicinformer.NewDynamicSharedInformerFactory(a.clients.Dynamic.Client, time.Minute*30)
+	factory := a.dynFact
 	informer := factory.ForResource(nsGVR).Informer()
+	a.mu.Unlock()
 
 	syncNamespaces := func() {
 		objs := informer.GetStore().List()
@@ -146,8 +147,8 @@ func (a *appData) initNamespaceWatcher(ctx context.Context) {
 	}
 
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { syncNamespaces() },
-		DeleteFunc: func(obj interface{}) { syncNamespaces() },
+		AddFunc:    func(obj any) { syncNamespaces() },
+		DeleteFunc: func(obj any) { syncNamespaces() },
 	})
 
 	go informer.Run(ctx.Done())
