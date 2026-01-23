@@ -129,7 +129,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		width := m.entity.Data.viewport.Width
 		wrapped := wordwrap.String(colorized, width)
 		m.entity.Data.viewport.SetContent(wrapped)
-		m.entity.Data.viewport.GotoBottom()
 		m.entity.Data.mu.Unlock()
 		return m, nil
 
@@ -137,6 +136,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch keypress := msg.String(); keypress {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+
+		case "g":
+			if m.entity.GetCurrentState() == logs {
+				m.entity.Data.viewport.GotoBottom()
+			}
 
 		case "s":
 			if m.entity.GetCurrentState() == logs {

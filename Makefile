@@ -1,5 +1,8 @@
 BINARY_NAME=kt
 
+tidy:
+	go mod tidy
+
 build:
 	go build -o dist/${BINARY_NAME} ./cmd
 
