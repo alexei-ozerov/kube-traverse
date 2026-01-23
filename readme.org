@@ -18,3 +18,10 @@ KT will cache data within your $HOME directory's =.kube= folder, under a JSON fi
 
 Once running, you will be faced with a screen containing all the GVRs present in the current cluster. You may use =/= to filter this list, as some clusters may have a large amount of CRDs, and KT will pick them up.
 Once selected, KT will check if the resource is namespaced or not. If so, you will need to select a namespace (or all). Next, KT will pull the actions you may perform on the resource (ie. fetching logs, fetching the specification, etc.). This will be dynamic based on the specific GVR definition. A =*= character beside the action indicates if it has been implemented yet or not.
+
+** Bugs, Fixes, Future Features
+*** TODO: Add checks on startup to see if the cluster connection can be established, and don't just call =panic=.
+*** TODO: Add a button to invalidate the local cache on demand.
+*** TODO: Implement further =actions= for more GVRs.
+**** TODO: Add =scale= functionality for deployments.
+
