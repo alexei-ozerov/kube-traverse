@@ -3,6 +3,9 @@
 * Kube Traverse
 K8s resource explorer.
 
+#+CAPTION: Usage example.
+[[./img/recording.gif]]
+
 ** What?
 A TUI application which dynamically pulls the GVRs present in a given cluster and allows the user to explore them through the actions associated with each reasource, dictated by the Kube API.
 
