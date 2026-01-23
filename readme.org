@@ -1,0 +1,17 @@
+#+Author: Alexei Ozerov
+
+* Kube Traverse
+K8s resource explorer.
+
+** What?
+A TUI application which dynamically pulls the GVRs present in a given cluster and allows the user to explore them through the actions associated with each reasource, dictated by the Kube API.
+
+** How?
+Run =make build= to get a binary in the =dist= folder.
+
+Run =make run= after having connected to a K8s cluster to run the application.
+
+KT will cache data within your $HOME directory's =.kube= folder, under a JSON file named =traverse_cache.json=.
+
+Once running, you will be faced with a screen containing all the GVRs present in the current cluster. You may use =/= to filter this list, as some clusters may have a large amount of CRDs, and KT will pick them up.
+Once selected, KT will check if the resource is namespaced or not. If so, you will need to select a namespace (or all). Next, KT will pull the actions you may perform on the resource (ie. fetching logs, fetching the specification, etc.). This will be dynamic based on the specific GVR definition. A =*= character beside the action indicates if it has been implemented yet or not.
