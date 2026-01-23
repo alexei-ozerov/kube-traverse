@@ -9,4 +9,6 @@ run:
 clean:
 	go clean
 	rm -rf dist
-	rm 2026*.log
+	rm -f ~/.kube/traverse_cache.json # App cache
+	rm -f *.log # Kube-logs dumped by kt
+	rm -rf logs # App logs
